@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Platform Game</title>
+    <style>
+        canvas { border: 2px solid black; }
+        #gameContainer { text-align: center; padding: 20px; position: relative; }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+            text-align: center;
+        }
+        #restartBtn {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="score">Score: 0</div>
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div id="gameOver">
+            <h2>Game Over!</h2>
+            <p>Your Score: <span id="finalScore">0</span></p>
+            <button id="restartBtn">Play Again</button>
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gameOverDiv = document.getElementById('gameOver');
+        const finalScoreSpan = document.getElementById('finalScore');
+        const restartBtn = document.getElementById('restartBtn');
+
+        // Game constants
+        const GRAVITY = 0.5;
+        const JUMP_FORCE = -12;
+        const SPEED = 5;
+
+        // Game state
+        let score = 0;
+        let currentScene = 1;
+        let gameObjects = [];
+        let coins = [];
+        let transitioning = false;
+        let gameActive = true;
+
+        class Player {
+            constructor() {
+                this.reset();
+            }
+
+            reset() {
+                this.x = 50;
+                this.y = canvas.height - 60;
+                this.width = 30;
+                this.height = 40;
+                this.velocityX = 0;
+                this.velocityY = 0;
+                this.isJumping = false;
+                this.onPipe = false;
+            }
+
+            update() {
+                if (transitioning || !gameActive) return;
+
+                this.velocityX = (keys.right ? SPEED : keys.left ? -SPEED : 0);
+                this.velocityY += GRAVITY;
+                
+                this.x += this.velocityX;
+                this.y += this.velocityY;
+
+                this.onPipe = false;
+
+                if (this.y > canvas.height - this.height - 20) {
+                    this.y = canvas.height - this.height - 20;
+                    this.velocityY = 0;
+                    this.isJumping = false;
+                }
+
+                gameObjects.forEach(obj => {
+                    const collision = this.checkCollision(obj);
+                    if (collision.collides) {
+                        switch(obj.type) {
+                            case 'platform':
+                            case 'pipe':
+                                this.handlePlatformCollision(obj, collision.side);
+                                if (obj.type === 'pipe' && this.onPipe && keys.down) {
+                                    this.transition(obj.targetScene);
+                                }
+                                break;
+                            case 'treasure':
+                                if (!obj.opened) {
+                                    obj.opened = true;
+                                    this.spawnCoins(obj.x, obj.y);
+                                }
+                                break;
+                            case 'flag':
+                                endGame();
+                                break;
+                        }
+                    }
+                });
+
+                coins = coins.filter(coin => !this.checkSimpleCollision(coin));
+            }
+
+            handlePlatformCollision(platform, side) {
+                switch(side) {
+                    case 'top':
+                        this.y = platform.y - this.height;
+                        this.velocityY = 0;
+                        this.isJumping = false;
+                        if (platform.type === 'pipe') {
+                            this.onPipe = true;
+                        }
+                        break;
+                    case 'bottom':
+                        this.y = platform.y + platform.height;
+                        this.velocityY = 0;
+                        break;
+                    case 'left':
+                        this.x = platform.x - this.width;
+                        this.velocityX = 0;
+                        break;
+                    case 'right':
+                        this.x = platform.x + platform.width;
+                        this.velocityX = 0;
+                        break;
+                }
+            }
+
+            checkCollision(obj) {
+                const overlap = {
+                    x: Math.min(this.x + this.width, obj.x + obj.width) - 
+                       Math.max(this.x, obj.x),
+                    y: Math.min(this.y + this.height, obj.y + obj.height) - 
+                       Math.max(this.y, obj.y)
+                };
+
+                if (overlap.x <= 0 || overlap.y <= 0) {
+                    return { collides: false };
+                }
+
+                const sides = {
+                    top: Math.abs(this.y + this.height - obj.y),
+                    bottom: Math.abs(this.y - (obj.y + obj.height)),
+                    left: Math.abs(this.x + this.width - obj.x),
+                    right: Math.abs(this.x - (obj.x + obj.width))
+                };
+
+                const minSide = Object.entries(sides).reduce((min, current) => 
+                    current[1] < min[1] ? current : min
+                );
+
+                return { collides: true, side: minSide[0] };
+            }
+
+            checkSimpleCollision(obj) {
+                const collides = this.x < obj.x + obj.width &&
+                               this.x + this.width > obj.x &&
+                               this.y < obj.y + obj.height &&
+                               this.y + this.height > obj.y;
+                
+                if (collides && obj.type !== 'pipe') {
+                    score += 100;
+                    scoreElement.textContent = `Score: ${score}`;
+                }
+                return collides;
+            }
+
+            transition(targetScene) {
+                if (!transitioning) {
+                    transitioning = true;
+                    let fadeOut = 0;
+                    const fadeInterval = setInterval(() => {
+                        fadeOut += 0.1;
+                        if (fadeOut >= 1) {
+                            clearInterval(fadeInterval);
+                            currentScene = targetScene;
+                            initScene(currentScene);
+                            // 將玩家放在目標場景水管頂部
+                            const targetPipe = gameObjects.find(obj => obj.type === 'pipe');
+                            if (targetPipe) {
+                                this.x = targetPipe.x;
+                                this.y = targetPipe.y - this.height;
+                            }
+                            transitioning = false;
+                        }
+                    }, 50);
+                }
+            }
+
+            spawnCoins(x, y) {
+                for (let i = 0; i < 5; i++) {
+                    coins.push({
+                        x: x + Math.random() * 40 - 20,
+                        y: y - 50,
+                        width: 15,
+                        height: 15
+                    });
+                }
+            }
+        }
+
+        // Initialize game
+        const player = new Player();
+        const keys = { left: false, right: false, up: false, down: false };
+
+        function initScene(scene) {
+            gameObjects = [];
+            coins = [];
+
+            if (scene === 1) {
+                gameObjects = [
+                    { type: 'platform', x: 100, y: 300, width: 100, height: 20 },
+                    { type: 'platform', x: 300, y: 250, width: 100, height: 20 },
+                    { type: 'platform', x: 500, y: 200, width: 100, height: 20 },
+                    { type: 'pipe', x: 700, y: 300, width: 50, height: 100, targetScene: 2 }
+                ];
+            } else {
+                gameObjects = [
+                    { type: 'pipe', x: 50, y: 300, width: 50, height: 100, targetScene: 1 },
+                    { type: 'treasure', x: 300, y: 300, width: 40, height: 40, opened: false },
+                    { type: 'flag', x: 700, y: 100, width: 20, height: 300 }
+                ];
+            }
+        }
+
+        // Event listeners
+        document.addEventListener('keydown', e => {
+            if (!gameActive) return;
+            switch(e.key) {
+                case 'ArrowLeft': keys.left = true; break;
+                case 'ArrowRight': keys.right = true; break;
+                case 'ArrowUp':
+                    keys.up = true;
+                    if (!player.isJumping) {
+                        player.velocityY = JUMP_FORCE;
+                        player.isJumping = true;
+                    }
+                    break;
+                case 'ArrowDown': keys.down = true; break;
+            }
+        });
+
+        document.addEventListener('keyup', e => {
+            switch(e.key) {
+                case 'ArrowLeft': keys.left = false; break;
+                case 'ArrowRight': keys.right = false; break;
+                case 'ArrowUp': keys.up = false; break;
+                case 'ArrowDown': keys.down = false; break;
+            }
+        });
+
+        restartBtn.addEventListener('click', () => {
+            gameActive = true;
+            score = 0;
+            currentScene = 1;
+            player.reset();
+            initScene(currentScene);
+            scoreElement.textContent = `Score: ${score}`;
+            gameOverDiv.style.display = 'none';
+        });
+
+        function endGame() {
+            gameActive = false;
+            finalScoreSpan.textContent = score;
+            gameOverDiv.style.display = 'block';
+        }
+
+        function draw() {
+            // Clear and draw background
+            ctx.fillStyle = '#87CEEB';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw ground
+            ctx.fillStyle = '#8B4513';
+            ctx.fillRect(0, canvas.height - 20, canvas.width, 20);
+
+            // Draw game objects
+            gameObjects.forEach(obj => {
+                ctx.fillStyle = obj.type === 'platform' ? '#8B4513' :
+                               obj.type === 'pipe' ? '#008000' :
+                               obj.type === 'treasure' ? (obj.opened ? '#A0522D' : '#DAA520') :
+                               '#FF0000';
+                ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
+            });
+
+            // Draw coins
+            coins.forEach(coin => {
+                ctx.fillStyle = '#FFD700';
+                ctx.beginPath();
+                ctx.arc(coin.x + coin.width/2, coin.y + coin.height/2, 
+                       coin.width/2, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Draw player
+            ctx.fillStyle = 'red';
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            // Draw transition effect
+            if (transitioning) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        // Game loop
+        function gameLoop() {
+            player.update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        initScene(currentScene);
+        gameLoop();
+    </script>
+</body>
+</html>
